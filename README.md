@@ -17,6 +17,7 @@
 ```sh
 export UV_CACHE_DIR="$PWD/.cache/uv"
 export UV_PYTHON_INSTALL_DIR="$PWD/.cache/uv/python"
+export MPLCONFIGDIR="$PWD/.cache/matplotlib"
 uv python install 3.11
 uv venv --python 3.11
 uv sync --dev
