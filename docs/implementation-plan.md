@@ -1,0 +1,236 @@
+# MetaDrive 安全场景平台 Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 从零实现安全需求管理、MetaDrive 原生场景生成与运行、单场景实时俯视画面、仿真证据追溯、风险模型训练与场景选择，以及第二阶段的自然语言模板配置。
+
+**Architecture:** 在工作区新建 `metadrive-safety-platform/`，以 FastAPI + SQLite 提供业务与任务接口，以独立 worker 进程运行 MetaDrive；每个场景版本同时保存可编辑 `ScenarioSpec` 和可由 `ScenarioEnv` 加载的原生数据集。场景类别通过注册表扩展，三类模板是首批实现而非运行器允许的全部类型。单场景可视化运行由 worker 取得 MetaDrive 俯视帧，经本地临时帧文件与 WebSocket 转发到网页；批量运行不开启渲染。风险模型从本系统仿真记录训练；大模型仅将中文描述解析为已支持模板的参数，由同一个确定性生成器产出场景。
+
+**Tech Stack:** Python 3.11、uv、MetaDrive（先试 `MetaDrive-0.4.3`，通过能力验证后锁定实际 commit SHA）、FastAPI、Pydantic v2、SQLAlchemy 2 + Alembic + SQLite、NumPy、scikit-learn、pytest；Vue 3 + TypeScript + Vite。第二阶段通过 `httpx` 调用 DeepSeek Responses API，保留 `LLMProvider` 抽象供测试和以后替换。
+
+**Spec:** `docs/design.md`（v0.13）。研究参考：`docs/research.md`。执行者在 Task 1 开始前通读两份文件；本计划中的接口和任务优先落实设计稿，不修改原仓库或 `/Users/liushengdong/Code/Intelligent_driving_scenario/Org_docs`。
+
+## Global Constraints
+
+- 只使用 MetaDrive 作为仿真执行器；不实现 CARLA 或 OpenSCENARIO。
+- 运行交付物是 Scenario Description 场景 `.pkl`、`dataset_summary.pkl`、`dataset_mapping.pkl` 及项目清单；必须用锁定版本的 `ScenarioEnv` 重载和运行。
+- 三类必做内置模板：前车切入、前车紧急制动、变道。暂将“变道”实现为自车按预设路线变向相邻车道、邻道有一辆交通车；若能力验证证明该定义无法在原生包中复现，记录证据并在改动场景语义前回到设计稿。第四类正式场景不是交付门槛，但场景类别注册、通用运行和动态界面的扩展接口是第一版必做。
+- 周围车辆首版按预生成轨迹回放；实时响应自车的触发行为不在首版范围。`reactive_traffic` 必须写入运行配置。
+- 自车使用版本固定的项目规则控制器；`ExpertPolicy` 只在场景地图兼容性验证通过后作为对照。
+- 训练标签只能从真实 `ScenarioEnv` 运行计算；随机种子、仿真后轨迹和指标不得作为风险模型输入。最小 TTC 预测窗口 10 秒，真实碰撞记 0，无预测相交记 10 秒；风险发现初始阈值为 TTC < 1.5 秒或真实碰撞。
+- 训练与对照实验的候选池、预算、数据划分及阈值在读取冻结测试结果前固定。建议预算：共享初始 300 次有效运行、模型选择 450 次、随机对照 450 次、冻结测试 200 次；实测性能后可在实验配置中调整并记录原因。
+- `.pkl` 采用 pickle；公共 HTTP 接口不得反序列化用户上传的未知 pickle。Web 只导入本平台导出包中的 `ScenarioSpec` JSON，重新生成并校验原生场景；仅受信任的本地管理命令可读取已有 pickle，且先校验清单和哈希。
+- 目标机器先按 macOS arm64、无界面运行验证。当前系统 `python3` 为 3.9.6，`uv` 已安装，执行者须在项目本地创建 Python 3.11 环境，不能直接用系统 Python；当前沙箱的全局 uv 缓存不可写，所有 uv 命令在项目根目录先设置 `UV_CACHE_DIR=$PWD/.cache/uv`。
+- 单场景可视化运行是第一版发布门槛，必须显示 MetaDrive `ScenarioEnv` 的真实俯视渲染帧。先验证锁定版在目标机器上 `env.render(mode="topdown", window=False)` 连续出帧；可视化模式目标 5–10 帧/秒、约 1 倍速，批量训练与实验不开渲染或节流。画面是临时观察数据，运行证据仍由轨迹与指标构成。
+- Task 10 是独立的第一版验收与交付门槛；通过后才开始 Task 11 的 DeepSeek 自然语言功能。暂停恢复、任意外部 pickle、3D、第四类正式场景、任意新行为的自然语言生成及扩展 AI 模型等未保证能力，要按设计稿逐项做最小验证并写入 `docs/feature_feasibility.md`；评估不是实现证明。
+- 第二阶段自然语言功能只配置已有模板；调用 DeepSeek API，默认模型 `deepseek-flash`，可由 `DEEPSEEK_MODEL` 覆盖。DeepSeek 不可用时手动配置流程仍可使用。`DEEPSEEK_API_KEY` 只从环境变量读取，不进入仓库、日志或场景包。
+- 任务完成后运行相应测试并提交一次小型 commit。若尚无 Git 仓库，Task 1 初始化；不要提交大数据集、模型二进制、生成场景包或本地数据库。
+
+## Review Focus
+
+以下七项容易影响真实用户，分别由所列任务的测试固定：
+
+1. 场景参数合法但改动后原生轨迹不变：Task 3 的 `test_parameter_change_changes_replayed_actor` 必须失败并阻止发布。
+2. 场景包缺文件、哈希不符或来自未知上传：Task 3/6 的 `test_invalid_bundle_rejected_before_pickle_load` 和 `test_no_public_pickle_import` 必须拒绝。
+3. 用户停止或 worker 中断后运行状态永远停在“运行中”：Task 6 的 `test_stop_and_recover_run` 必须收敛到终态。
+4. 同一场景族的近重复变体泄漏进训练和冻结测试：Task 8 的 `test_group_split_has_no_overlap` 必须拦截。
+5. 中文描述提出运行时触发或缺失关键参数，大模型却悄悄改写为固定时间：Task 11 的 `test_unsupported_trigger_and_missing_field` 必须返回明确错误/待补充项。
+6. 页面显示的俯视图与当前运行不一致，或可视化改变安全指标：Task 1 的出帧探测、Task 4 的同种子一致性测试及 Task 7 的真实页面烟测必须拦截。
+7. 场景类型被硬编码为三类，新增类别无法走通生成和运行：Task 2/3/6/7 的测试用第四类必须通过通用流程，未知类型必须得到明确错误。
+
+---
+
+## 交付阶段与开始方式
+
+执行顺序为 Task 1–12。Task 1–4 产出可扩展的场景内核；Task 5–7 产出含实时俯视画面的业务平台，Task 7 完成时就须对三类场景做真实页面验收；Task 8–9 产出必做 AI 训练闭环；**Task 10 独立验收第一版，未通过不得宣布第一版完成或进入第二阶段**；Task 11 产出 DeepSeek 自然语言模板配置；Task 12 完成全项目验收。每阶段结束时软件都应能独立运行和复验。首次执行直接创建 `metadrive-safety-platform/` 并从 Task 1 开始，不要先开发网页。
+
+建议执行提示词：**“阅读此计划及 Spec，按 Task 1 起逐项实施；每项先写失败测试，再实现、验证、提交。遇到 MetaDrive 原生格式/平台能力不满足验收时保存最小复现与日志，暂停依赖它的任务并报告具体阻碍。”**
+
+## 文件责任图
+
+以下路径均相对 `metadrive-safety-platform/`：
+
+| 路径 | 单一职责 |
+|---|---|
+| `src/safety_platform/config.py` | 工作目录、数据库、模型及外部 API 环境配置 |
+| `src/safety_platform/domain/spec.py`、`templates.py`、`registry.py` | 场景规格、类别注册、参数约束和可复现采样 |
+| `src/safety_platform/sim/base_map.py`、`trajectories.py`、`builder.py`、`bundle.py` | 原生场景构建、轨迹、数据集包及完整性 |
+| `src/safety_platform/sim/policy.py`、`runner.py`、`metrics.py`、`frames.py` | 自车控制、`ScenarioEnv` 运行、指标与俯视帧采样 |
+| `src/safety_platform/storage/models.py`、`repository.py`、`db.py` | SQLite 实体、版本与查询 |
+| `src/safety_platform/api/app.py`、`routes/*.py` | 需求、场景、运行、模型、实验和预设的 HTTP 契约；不在请求进程执行长仿真 |
+| `src/safety_platform/jobs/worker.py` | 持久任务领取、停止、可视化运行的临时帧写入和故障恢复 |
+| `src/safety_platform/ml/dataset.py`、`model.py`、`select.py`、`experiment.py` | 训练集、风险模型、候选选择、对照实验 |
+| `src/safety_platform/nl/provider.py`、`service.py` | 大模型调用与模板参数解析 |
+| `web/src/pages/*.vue`、`web/src/api.ts` | 用户工作流页面与后端请求 |
+| `tests/unit/`、`tests/integration/`、`web/src/*.test.ts` | 领域规则和真实 MetaDrive/API 冒烟验证 |
+
+### Task 1: 初始化仓库并证明原生场景可重载
+
+**Files:** Create `pyproject.toml`、`.gitignore`、`README.md`、`src/safety_platform/__init__.py`、`src/safety_platform/config.py`、`src/safety_platform/sim/__init__.py`、`src/safety_platform/sim/probe.py`、`tests/integration/test_native_probe.py`、`docs/compatibility.md`、`docs/feature_feasibility.md`、`uv.lock`。
+
+**Interfaces:** Produce `probe_native(out_dir: Path) -> ProbeResult`，其中 `ProbeResult` 包含数据集目录、场景 ID、MetaDrive 版本、实际源码 SHA、`steps`、`actor_changed_lane`、`ego_moved`、`dataset_index_readable`、`topdown_frames_valid`、`mean_render_ms`、`peak_memory_mb`。后续任务只依赖通过验证的版本和导出/加载调用方式。
+
+- [ ] 建立 `metadrive-safety-platform/` 和 Git 仓库，将 `.cache/`、`.venv/`、`var/` 加入 `.gitignore`；执行 `export UV_CACHE_DIR=$PWD/.cache/uv`、`export UV_PYTHON_INSTALL_DIR=$PWD/.cache/uv/python`、`uv python install 3.11`、`uv venv --python 3.11`。在 `pyproject.toml` 声明 Python 3.11、测试与后端依赖，并先使用[官方发布页](https://github.com/metadriverse/metadrive/releases)中的 `MetaDrive-0.4.3` Git tag；网络或平台限制要记录，不能暗换仿真器。
+- [ ] 写 `test_native_export_then_scenarioenv_replay`：生成最小双车道切入场景，保存官方原生数据集，用 `ScenarioEnv` 重载并以外部动作控制自车；核心断言为 `assert result.steps >= 100`、`assert result.actor_changed_lane`、`assert result.ego_moved`、`assert result.dataset_index_readable`。运行 `uv run pytest tests/integration/test_native_probe.py -q`，预期在 `probe_native` 未实现时失败。
+- [ ] 实现 `probe_native`：优先使用官方记录/导出、`save_dataset`、`ScenarioDescription.sanity_check` 和 `ScenarioEnv`；这个一次性原型只验证原生场景和闭环自车控制，不作为正式模板生成器。无界面运行并始终关闭环境。记录依赖版本、MetaDrive commit、macOS arm64 结果和最小复现命令于 `docs/compatibility.md`。
+- [ ] 同一原生场景重载后调用 `env.render(mode="topdown", window=False, screen_size=(640, 360))`，连续获取至少 100 帧；检查非空、像素内容随车辆运动变化，记录平均出帧时间与内存。在目标机上若无法稳定出帧，保存最小复现与日志，暂停依赖实时画面的任务；不要以网页自绘轨迹代替这一能力验收。
+- [ ] 建立 `docs/feature_feasibility.md`，逐项记录未保证能力的验证环境、最小复现、结果、预计工作量和结论；本任务先探测暂停/恢复所需状态保存及 macOS arm64 的 3D 离屏出帧，不把探测结果写成已交付功能。
+- [ ] 运行同一测试，预期通过；锁定实际 MetaDrive SHA 和 `uv.lock`。如果 0.4.3 不可用，只有在记录错误、替代 SHA 与重载证据后才改用较新 commit。
+- [ ] 提交：`git commit -m "feat: prove native MetaDrive roundtrip"`。
+
+### Task 2: 场景类别注册、三类模板与参数采样
+
+**Files:** Create `src/safety_platform/domain/spec.py`、`templates.py`、`registry.py`、`tests/unit/test_spec.py`、`tests/unit/test_sampling.py`、`tests/unit/test_scenario_registry.py`、`tests/factories.py`。
+
+**Interfaces:** Produce `ScenarioSpec`（`template_id`、`template_version`、`map_spec`、`ego_spec`、`actor_specs`、`event_spec`、`seed`，及基于规范化参数的 `fingerprint() -> str`）、`ScenarioType` 契约（稳定 ID/版本、JSON Schema 与表单元数据、单位/默认值、`validate`、`sample`、`build_native`、`check_event`）、`ScenarioRegistry.register/get/list`、`validate_spec(raw: Mapping[str, Any]) -> ScenarioSpec`、`sample_specs(template_id: str, count: int, seed: int) -> list[ScenarioSpec]`。所有距离用米、速度用米/秒、时间用秒、减速度用米/秒²。
+
+- [ ] 写失败测试：`test_cut_in_constraints` 对初始重叠、负事件时间和越界车速分别断言 `pytest.raises(ValidationError)`；`test_sampling_repeatable` 断言 `sample_specs("cut_in", 10, 42) == sample_specs("cut_in", 10, 42)`、与种子 43 的结果不等，且三类模板均返回 10 个有效规格。运行 `uv run pytest tests/unit/test_spec.py tests/unit/test_sampling.py -q`，预期失败。
+- [ ] 实现三类模板的字段、单位、默认值、范围和跨字段约束。首个能力验证采用双车道直路、车道宽 3.5 米、仿真时长 10 秒；起步范围：自车速度 8–22 米/秒、目标车速度 6–22 米/秒、纵向初距 15–80 米、事件开始 1–5 秒、变道持续 2–4 秒、急刹减速度 1–6 米/秒²。若 MetaDrive 原型表明范围需收窄，变更模板版本并记录原因。
+- [ ] 定义切入为邻道车进入自车道；急刹为同车道前车减速；变道为自车按预定路线进入邻道且该车道有交通车。采样时排除初始重叠、动作在仿真结束后才发生等无效规格。
+- [ ] 三类内置模板通过注册表登记，通用校验和采样只按 `template_id` 查注册表；未知 ID 给出明确错误，不允许在通用层写死三类分支。用测试用第四类注册桩检查目录、校验、采样和版本，保留旧版本处理路径。评估行人横穿能否作为后续正式类别，记录在 `docs/feature_feasibility.md`，不把它作为本次交付模板。
+- [ ] 运行 `uv run pytest tests/unit/test_spec.py tests/unit/test_sampling.py tests/unit/test_scenario_registry.py -q`，预期通过；提交 `git commit -m "feat: define extensible scene templates"`。
+
+### Task 3: 经注册类别生成 MetaDrive 原生包
+
+**Files:** Create `src/safety_platform/sim/base_map.py`、`trajectories.py`、`builder.py`、`bundle.py`、`tests/integration/test_native_builder.py`、`tests/unit/test_bundle.py`。
+
+**Interfaces:** Produce `build_native(spec: ScenarioSpec, out_dir: Path) -> NativeBundle` 与 `verify_bundle(bundle_dir: Path) -> BundleManifest`。`NativeBundle` 至少含场景 ID、场景 `.pkl` 路径、`dataset_summary.pkl`、`dataset_mapping.pkl`、`manifest.json` 路径。`manifest.json` 记录规格版本、生成器版本、MetaDrive SHA、种子、各文件 SHA-256 与 `reactive_traffic=false`。
+
+- [ ] 写失败测试 `test_each_template_builds_valid_scenarionet_dataset`、`test_parameter_change_changes_replayed_actor`、`test_invalid_bundle_rejected_before_pickle_load`。核心断言：三类场景 `sanity_check` 不抛错且 `ScenarioEnv.reset()` 成功；改变切入距离或时间后 `assert not np.array_equal(actor_track_a, actor_track_b)`；删索引或篡改哈希后 `pytest.raises(BundleIntegrityError)` 且未执行 `pickle.load`。运行目标测试，预期失败。
+- [ ] 从 Task 1 验证过的程序化地图提取道路几何；按模板生成目标车的逐帧位置、朝向、速度和有效标记。使用平滑横向插值形成切入/变道轨迹，以纵向速度曲线形成急刹；将自车初态、地图和周车轨迹组装为 `ScenarioDescription`。
+- [ ] 使用锁定版 MetaDrive 的 `sanity_check` 与 `save_dataset` 写出数据集；写 `manifest.json`，保留编辑用 `ScenarioSpec` JSON。`verify_bundle` 先检查文件列表、路径穿越和哈希，再允许受信任运行器读取 pickle。正常 Web 流程只能运行本平台生成的包。
+- [ ] `build_native` 按注册表调用对应类别的原生构建器和事件检查器；用仅在测试注册的第四类简单场景生成包并由 `ScenarioEnv` 重载执行，证明通用运行与指标链路可接入新类别。该测试类别不作为第四类正式产品场景。记录行人横穿原生构建与行为验证的最小实验；评估任意外部 `.pkl` 的格式兼容性和可信导入路径，不放宽公共上传规则。
+- [ ] 运行 `uv run pytest tests/integration/test_native_builder.py tests/unit/test_bundle.py -q`，预期通过；提交 `git commit -m "feat: build runnable MetaDrive bundles"`。
+
+### Task 4: 固定自车策略、运行器和安全指标
+
+**Files:** Create `src/safety_platform/sim/policy.py`、`runner.py`、`metrics.py`、`frames.py`、`tests/unit/test_ttc.py`、`tests/integration/test_runner.py`、`tests/integration/test_visual_run.py`、`tests/integration/test_policy_qualification.py`、`docs/policy_qualification.md`。
+
+**Interfaces:** Produce `run_bundle(bundle_dir: Path, policy: PolicyConfig, seed: int, stop_requested: Callable[[], bool] | None = None, frame_sink: FrameSink | None = None, playback_rate: float | None = None) -> RunOutcome`。`frame_sink=None` 时无渲染；可视化模式输出抽样俯视帧并按仿真时间约 1 倍速播放。`RunOutcome` 含状态、轨迹文件、碰撞、越界、完成情况、最小 TTC、有效性及策略/仿真器版本。`compute_ttc(ego_state, other_state, horizon_s=10.0) -> float`。
+
+- [ ] 写失败测试 `test_ttc_closing_and_diverging`：同向接近时 `assert 0 < ttc < 10`，远离或未来 10 秒不相交时 `assert ttc == 10`，真实碰撞时 `assert min_ttc == 0`。写 `test_runner_replay_same_seed`：同一包、策略、种子重复运行时 `assert a.status == b.status` 且 `assert abs(a.min_ttc - b.min_ttc) < 1e-6`。运行目标测试，预期失败。
+- [ ] 实现版本固定的规则控制器：沿场景路线中心线转向，按前方障碍距离制动，并在“变道”模板使用预设目标车道。控制器仅消费运行时状态，不改写原生场景包；固定控制参数和版本。
+- [ ] `ScenarioEnv` 在独立可关闭环境中逐步运行，保存自车与周车轨迹、碰撞标记和结束原因。TTC 按设计稿的二维相对匀速外推与车体包围盒首次相交计算，裁剪到 0–10 秒；单独记录真实碰撞、越界、完成情况。事件动作由对应已注册类别的 `check_event` 验证，通用指标计算不只接受三类内置 ID。
+- [ ] 实现 `FrameSink` 可选输出：仅单场景可视化运行时调用 MetaDrive 无弹窗俯视渲染，按目标 5–10 帧/秒抽样，编码为 JPEG，保留最新帧；慢消费者丢弃旧帧。写 `test_visual_run_matches_headless_metrics`，同一场景包/策略/种子的无画面与可视化两种模式轨迹与指标一致；出帧不应改变控制动作或仿真步数。记录实际帧率与耗时。
+- [ ] 在 `test_policy_qualification.py` 固定 20 个没有危险事件的双车道种子，断言至少 19 个正常完成且没有碰撞；将路线、种子、结果及策略版本写入 `docs/policy_qualification.md`。未通过时先修正规则策略，不能用它生成训练标签。
+- [ ] 运行 `uv run pytest tests/unit/test_ttc.py tests/integration/test_runner.py tests/integration/test_visual_run.py tests/integration/test_policy_qualification.py -q`，预期通过；提交 `git commit -m "feat: run scenes and record safety metrics"`。
+
+### Task 5: 不可覆盖的需求、场景版本与证据关系
+
+**Files:** Create `src/safety_platform/storage/db.py`、`models.py`、`repository.py`、`alembic.ini`、`migrations/`、`tests/unit/test_repository.py`。
+
+**Interfaces:** Produce `RequirementRepository.create(data: RequirementCreate) -> RequirementVersion`、`revise(requirement_id: UUID, data: RequirementUpdate) -> RequirementVersion`、`archive(requirement_id: UUID) -> None`；`ScenarioRepository.create_version(scenario_id: UUID, spec: ScenarioSpec, bundle: NativeBundle) -> ScenarioVersion`、`link(requirement_version_id: UUID, scenario_version_id: UUID) -> RequirementScenarioLink`、`trace_requirement(requirement_id: UUID) -> TraceResult`；`RunRepository.save(outcome: RunOutcome, scenario_version_id: UUID) -> SimulationRun`、`set_safety_label(run_id: UUID, label: SafetyLabelInput) -> SafetyLabel`。输入/返回对象在 `storage/models.py` 定义，ID 用 UUID，版本号从 1 单调增加。
+
+- [ ] 写失败测试 `test_revision_preserves_old_evidence_and_marks_link_stale`：修改需求或场景后 `assert old_version.id != new_version.id`、`assert old_run.scenario_version_id == old_scene_version.id`、`assert link.status == "stale"`。写 `test_manual_label_keeps_auto_label_and_reason`：`assert label.auto_value == original_auto_value` 且 `assert label.manual_reason`。运行 `uv run pytest tests/unit/test_repository.py -q`，预期失败。
+- [ ] 用 SQLAlchemy/Alembic 建立需求、需求版本、模板、场景、场景版本、需求—场景版本链接、运行、指标、安全标签及审核记录；SQLite 启用 WAL 和 busy timeout。场景版本与完成的运行记录不可原地修改。
+- [ ] 实现按需求、场景、标签、指标的组合查询和双向追溯；规则初判必须保存阈值、算法版本，人工确认/改判保存操作者和理由。
+- [ ] 运行目标测试及 `uv run alembic upgrade head`，预期通过；提交 `git commit -m "feat: persist versioned requirements and evidence"`。
+
+### Task 6: API、持久任务与导入导出边界
+
+**Files:** Create `src/safety_platform/api/app.py`、`api/routes/requirements.py`、`scenarios.py`、`runs.py`、`trace.py`、`src/safety_platform/jobs/worker.py`、`src/safety_platform/cli.py`、`tests/integration/test_api.py`、`tests/integration/test_worker.py`、`tests/integration/test_run_frames_api.py`。
+
+**Interfaces:** HTTP 提供 `/api/requirements`（创建、查询、修订、归档）、`/api/templates`、`/api/scenarios`（创建、搜索、版本、JSON 重建导入/原生包导出）、`/api/runs`（创建时可选 `visualize=true`；详情返回当前 `sim_time_s`）、`/api/runs/{id}/stop`、`/api/labels`（人工确认/改判）、`/api/trace/requirements/{id}`；WebSocket `/api/runs/{id}/frames` 只转发该运行的俯视 JPEG 帧。CLI 提供 `safety-platform worker` 与 `safety-platform run-bundle <trusted-path>`。运行状态为 `queued/running/completed/failed/stopped`。
+
+- [ ] 写失败测试 `test_requirement_to_run_trace_api`：创建需求和场景版本、建立链接、排队运行，断言追溯响应含 `run_id`、`min_ttc`、安全标签。写 `test_stop_and_recover_run`：停止或 worker 意外退出后 `assert status in {"failed", "stopped"}`。写 `test_no_public_pickle_import`：上传未知 `.pkl` 返回 4xx 且未调用 `pickle.load`，合法导出包的 `ScenarioSpec` JSON 经重新生成后返回新版本 ID。运行目标测试，预期失败。
+- [ ] 实现 FastAPI 参数校验、分页/筛选与统一错误结构。长仿真只排入 SQLite 持久任务，由独立 worker 领取并调用 `run_bundle`；领取需事务原子化，重复启动不应重复执行同一任务。进程退出时清理环境，重启时将遗留 `running` 状态标为 `failed` 或可重试。
+- [ ] 实现场景包下载及 Web 导入：上传包仅解析受限清单和 `ScenarioSpec` JSON，验证模板版本与参数后在服务端重新构建原生包，不读取上传的 pickle；防止 zip 路径穿越和超大文件。本地受信任 CLI 可导入已校验的原生包。Task 1 中检查暂停/恢复是否能可靠保存物理状态；不能证明时 UI/API 只提供启动、停止、状态和历史结果，并在文档中记录。
+- [ ] `/api/templates` 从注册表输出所有已注册类别及当前版本的 JSON Schema/表单元数据；创建场景、版本存储、运行和导入重建均按注册 ID 分发，不把三类名称写进通用路由。用测试类别走通 API 创建、原生包生成、运行、查询与版本记录，未知类别返回 4xx。将暂停恢复和外部原生包导入的最小验证、风险及工作量写入 `docs/feature_feasibility.md`。
+- [ ] 对 `visualize=true` 的单次运行，worker 将最新 JPEG 以临时文件加原子替换写入 `var/run-frames/<run_id>/latest.jpg`，并定期更新运行详情中的 `sim_time_s`；API 与 worker 同机共享该目录，WebSocket 按文件变更只转发新帧，不经 SQLite 保存图像。断线可重新订阅，页面关闭不终止运行；终态后短暂保留末帧供重连，按保留期限清理，worker 重启时清理异常遗留文件。限制同一时刻可视化运行数为 1，拒绝无效运行 ID 订阅。写集成测试覆盖帧所属运行、重连、终态及清理。
+- [ ] 运行 `uv run pytest tests/integration/test_api.py tests/integration/test_worker.py tests/integration/test_run_frames_api.py -q`，预期通过；提交 `git commit -m "feat: expose evidence API and persistent run jobs"`。
+
+### Task 7: 用户界面与业务闭环
+
+**Files:** Create `web/package.json`、`web/src/App.vue`、`web/src/api.ts`、`web/src/pages/RequirementsPage.vue`、`ScenariosPage.vue`、`RunsPage.vue`、`TracePage.vue`、`web/src/ScenarioFlow.test.ts`。
+
+**Interfaces:** Vue 页面调用 Task 6 的 HTTP API 和俯视帧 WebSocket；不自行计算风险标签或修改原生 `.pkl`。实时画面来自 MetaDrive 渲染帧，结束后的轨迹仍可从后端压缩坐标数据绘制二维俯视图。
+
+- [ ] 写失败的关键流程测试 `ScenarioFlow.test.ts`：创建需求 → 选择模板并校验参数 → 生成场景版本 → 选择可视化运行 → 收到并显示该 `run_id` 的俯视帧 → 查看指标/标签 → 返回需求页；核心断言为页面含需求编号、场景版本号、运行 ID、俯视画面、最小 TTC 与“待复验/已验证”状态。
+- [ ] 建立 Vue 3 + TypeScript 项目、Vitest 测试脚本和锁文件；实现需求列表/编辑、模板参数表单及约束提示、批量变体、场景版本、导入/导出、运行状态/停止、二维轨迹、指标和安全标记、双向追溯与待复验提示。保存操作只调用后端。
+- [ ] 运行页面增加“可视化运行”入口，订阅该 `run_id` 的 WebSocket 并显示最新俯视画面、仿真时间与状态；断线提示并自动重连，页面关闭时释放图像对象和连接，运行结束后显示结果入口。用三类真实场景各做一次页面烟测，记录画面随运行变化、事件可见以及实际帧率；批量运行页面不订阅画面。
+- [ ] 模板列表和参数表单从 `/api/templates` 的元数据生成，不为三类模板各写一套固定表单；用测试注册类别验证页面可展示字段、输入参数并创建场景，未知/旧版本显示明确错误或只读历史。评估 3D 画面与视频归档的性能和存储工作量，记入 `docs/feature_feasibility.md`，俯视画面仍是第一版必做。
+- [ ] 运行 `npm --prefix web test` 与 `npm --prefix web run build`，预期通过；再用真实后端执行一条手动烟测并记录在 `docs/smoke.md`。提交 `git commit -m "feat: add safety scenario workflow UI"`。
+
+### Task 8: 仿真数据集、风险模型与模型版本
+
+**Files:** Create `src/safety_platform/ml/dataset.py`、`model.py`、`registry.py`、`src/safety_platform/api/routes/models.py`、`tests/unit/test_dataset.py`、`tests/unit/test_risk_model.py`、`tests/integration/test_models_api.py`、`docs/model_card_template.md`。
+
+**Interfaces:** Produce `build_training_rows(runs: Sequence[RunOutcome]) -> list[TrainingRow]`、`group_split(rows: Sequence[TrainingRow], frozen_scenario_ids: set[str], seed: int) -> TrainValTest`、`train_risk_model(split: TrainValTest, config: TrainConfig) -> ModelArtifact`、`predict_risk(model: ModelArtifact, spec: ScenarioSpec) -> RiskPrediction`。`RiskPrediction` 含 5 个模型的均值 TTC、标准差和模型版本；HTTP `/api/models/train` 排入训练任务，`/api/models/{id}` 查询训练状态与指标。
+
+- [ ] 写失败测试 `test_group_split_has_no_overlap` 与 `test_no_post_run_feature_leakage`：`assert train_groups.isdisjoint(test_groups)`、`assert val_groups.isdisjoint(test_groups)`；`assert not {"seed", "trajectory", "collision", "min_ttc"} & feature_names`。写小型合成数据训练测试，断言序列化前后预测均值误差小于 `1e-9`。运行目标测试，预期失败。
+- [ ] 从有效运行构造训练表，保留来源、场景/策略/仿真器/指标算法版本和原始结果引用；按场景族、参数区域和种子分组。冻结测试集只能用于最终报告，不参与调参或主动选择。
+- [ ] 新注册类别即使能够生成和运行，也不得直接用仅在三类内置场景训练的模型给出风险分数；模型版本记录已覆盖的类别和参数模式，对未覆盖类别返回“需要采样并重训”。评估公开数据小样本转换、许可、磁盘和重跑成本，以及 MLP/图网络所需数据条件，记入 `docs/feature_feasibility.md`。
+- [ ] 用 `HistGradientBoostingRegressor` 建立单模型基线，再按场景组重采样训练 5 个模型；分类字段用固定编码，候选超参数只在验证集选。记录 MAE、按模板误差、低 TTC 区间召回、训练配置和模型哈希。只有碰撞正例足够时才另做分类器。
+- [ ] 运行 `uv run pytest tests/unit/test_dataset.py tests/unit/test_risk_model.py tests/integration/test_models_api.py -q`，预期通过；提交 `git commit -m "feat: train reproducible risk surrogate"`。
+
+### Task 9: AI 场景选择与同预算实验
+
+**Files:** Create `src/safety_platform/ml/select.py`、`experiment.py`、`src/safety_platform/api/routes/experiments.py`、`web/src/pages/ExperimentsPage.vue`、`web/src/Experiments.test.ts`、`tests/unit/test_selection.py`、`tests/integration/test_experiment.py`、`configs/experiment.yaml`、`docs/experiment_protocol.md`。
+
+**Interfaces:** Produce `select_candidates(model, pool: Sequence[ScenarioSpec], seen_ids: set[str], n: int) -> list[ScenarioSpec]` 与 `run_experiment(config: ExperimentConfig) -> ExperimentReport`。报告包含每轮模型/随机选择、有效风险数、碰撞数、发现成本、多样性、冻结测试误差和运行版本。
+
+- [ ] 写失败测试 `test_selection_deterministic_diverse_and_budgeted`：`assert select_candidates(model, pool, seen, 150) == select_candidates(model, pool, seen, 150)`、`assert len({s.fingerprint() for s in selected}) == 150`，三类模板均有名额。写 `test_frozen_test_never_enters_training_or_acquisition`：`assert not selected_ids & frozen_ids` 且 `assert not training_ids & frozen_ids`。运行目标测试，预期失败。
+- [ ] 实现标准化风险分数、5 模型分歧及参数空间距离的综合排序。首个 `configs/experiment.yaml` 固定 `score = 0.5 × (1 − mean_ttc/10) + 0.3 × min(std_ttc/3, 1) + 0.2 × normalized_diversity`，其中多样性是按模板参数范围缩放后的最近邻距离，截断到 [0, 1]；每轮三类模板各选 50 条。约束随机对照使用同分布、互不重叠的候选池，每轮与模型相同 150 次新增仿真；两组共享初始 300 条数据。权重与配额在首次搜索前固定。
+- [ ] 实现 `/api/experiments` 的创建、状态、结果查询及网页中的模型训练/实验页面；先运行缩小预算的端到端烟测，再按 `docs/experiment_protocol.md` 执行完整预算和多随机种子重复。报告有效样本比例、TTC<1.5 秒或碰撞的发现数、每发现成本、碰撞、多样性和冻结测试 MAE；若模型未优于随机如实呈现。
+- [ ] 首个实验仍只针对已采样并训练的三类内置模板；新类别只有积累有效样本、按相同划分重训并完成冻结测试后才可加入候选池。根据学习曲线和误差评估 MLP 的潜在收益，根据正例数评估碰撞分类器；记录未实施项的条件和工作量，不把研究模型当作第一版验收条件。
+- [ ] 运行 `uv run pytest tests/unit/test_selection.py tests/integration/test_experiment.py -q`、`npm --prefix web test` 与 `npm --prefix web run build`，预期通过；提交 `git commit -m "feat: compare guided and random scene search"`。
+
+### Task 10: 第一版独立验收与交付
+
+**Files:** Create `docs/traceability.md`、`docs/deployment.md`、`docs/first_release_acceptance.md`、`scripts/smoke-v1.sh`、`tests/integration/test_v1_end_to_end.py`；Modify `README.md`、`docs/compatibility.md`、`docs/feature_feasibility.md`、`docs/experiment_protocol.md`。
+
+**Interfaces:** `scripts/smoke-v1.sh` 在干净本地环境完成迁移、API/worker/Web 启动、场景创建、原生包重载、运行及指标查询；`docs/traceability.md` 将设计稿 R1–R8、N2、N3 映射到测试和界面；`docs/first_release_acceptance.md` 逐项记录证据、命令、版本、结果与未通过项。第一版验收不依赖 DeepSeek 密钥或自然语言功能。
+
+- [ ] 先写失败的第一版端到端测试：创建安全需求 → 从注册表选择模板 → 生成原生场景包 → 独立 `ScenarioEnv` 重载运行 → 网页收到真实俯视帧 → 保存 TTC/碰撞/安全标记 → 双向追溯；再用测试注册的第四类走通注册、参数表单、生成、运行、指标和存储，证明运行器不只支持三类名称。
+- [ ] 在目标 macOS arm64 上运行完整 Python 测试、前端测试与构建、`scripts/smoke-v1.sh`；真实浏览器分别运行切入、急刹和变道，检查画面、停止、断线重连和最终指标；独立解包重跑场景包，并执行风险模型的冻结测试及同预算对照实验。保留原始结果与预算变更记录，不能用模拟数据填补缺失实验。
+- [ ] 核对 `docs/traceability.md` 中 R1–R8、N2、N3 无未映射项；`docs/feature_feasibility.md` 已包含暂停恢复、外部原生包导入、3D/视频、行人及其他场景、公开数据、MLP/图网络/碰撞分类器的验证、阻碍与工作量。第一版尚未开发自然语言新行为生成，标为第二阶段待评估，不将其列为第一版通过项。
+- [ ] 只有上述必做项均通过，才在 `docs/first_release_acceptance.md` 标为第一版通过，并记录可安装版本、MetaDrive SHA、测试命令、浏览器证据和实验报告位置；未通过时继续修复对应任务，不提前开始 Task 11。提交 `git commit -m "docs: accept first release before language features"`。
+
+### Task 11: 自然语言创建现有模板的配置
+
+**Files:** Create `src/safety_platform/nl/provider.py`、`service.py`、`src/safety_platform/api/routes/presets.py`、`web/src/pages/DescribeScenePage.vue`、`tests/unit/test_nl_service.py`、`tests/integration/test_presets_api.py`、`tests/fixtures/nl_acceptance.jsonl`；Modify `storage/models.py`、`repository.py`、数据库迁移。
+
+**Interfaces:** Produce `LLMProvider.parse_scene(text: str, catalog: TemplateCatalog) -> ParsedDraft`；`create_preset_from_text(text: str, provider: LLMProvider) -> DraftResult`；`confirm_preset(draft_id: UUID, edits: dict) -> TemplatePreset`。`ParsedDraft` 仅含已有 `template_id`、字段值、`missing_required`、默认值标记和 `unsupported`；`DraftResult` 含 `parsed: ParsedDraft`、校验状态及试运行结果。在线适配器调用 DeepSeek 的 `POST https://api.deepseek.com/responses`，默认模型 `deepseek-flash`，以 `text.format` 的 `json_schema` 约束结构化输出（[官方接口文档](https://api-docs.deepseek.com/api/create-response/)）；从 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL` 读取配置，单元/集成测试用假提供者，不记录密钥。
+
+- [ ] 写失败测试 `test_unsupported_trigger_and_missing_field`：对“接近自车才切入”断言 `"runtime_trigger" in draft.parsed.unsupported`；缺少关键车道/动作信息时断言 `draft.parsed.missing_required` 非空且未生成场景。写 `test_valid_text_creates_reusable_preset`：中文切入描述解析后可编辑、经 `ScenarioEnv` 试运行，并断言复用时 `preset.base_template_id == "cut_in"`。运行目标测试，预期失败。
+- [ ] 模板目录由场景注册表中明确启用语言映射的类型生成；第二阶段先只启用三类内置模板。建立受限的 JSON Schema 输出契约；DeepSeek 只选模板与填参数，后端再用 Pydantic 做类型、单位、范围、跨字段校验。空响应、结构不符、超时或 API 错误必须返回可解释的失败状态，不得生成“已验证”预设；非关键默认值和来源必须展示。
+- [ ] 将草稿经 `build_native`、`run_bundle` 和事件动作检查；成功才保存 `TemplatePreset`，记录原始描述、结构化参数、基础模板版本、大模型/提示词版本、校验记录和试运行结果。风险模型只可用于多个有效候选的排序。外部 API 不可用时仍能手工创建场景。
+- [ ] 评估“中文描述直接创造全新行为类型”所需语义规格、生成器、运行时策略和验证成本，最小验证及结论写入 `docs/feature_feasibility.md`；当前功能不得绕开注册表生成可执行代码或未验证的新类型。
+- [ ] 运行 `uv run pytest tests/unit/test_nl_service.py tests/integration/test_presets_api.py -q`、`npm --prefix web test`、`npm --prefix web run build`，预期通过；在 `tests/fixtures/nl_acceptance.jsonl` 固定 30 条覆盖三类模板、缺失和不支持语义的中文描述及预期解析结果，逐条复核。在线适配器的真实调用在有合法密钥时验证。
+- [ ] 提交 `git commit -m "feat: create reusable presets from Chinese descriptions"`。
+
+### Task 12: 第二阶段及全项目端到端验收与交付
+
+**Files:** Create `scripts/smoke.sh`、`tests/integration/test_end_to_end.py`；Modify `docs/traceability.md`、`docs/deployment.md`、`docs/first_release_acceptance.md`、`docs/feature_feasibility.md`、`README.md`、`docs/compatibility.md`、`docs/experiment_protocol.md`。
+
+**Interfaces:** `scripts/smoke.sh` 在干净安装后的本地环境完成迁移、API/worker 启动、一个场景运行、自然语言预设复用及结果查询；`docs/traceability.md` 在第一版 R1–R8、N2、N3 的映射上增加 N1，并保留第一版独立验收记录。
+
+- [ ] 写端到端失败测试：新需求 → 前车切入场景版本 → 导出原生包 → 独立重载运行 → 收到实时俯视帧 → 保存 TTC/碰撞/安全标签 → 从需求与场景两侧查询证据；另外验证三类模板的网页实时画面、AI 模型版本和自然语言预设可复用。先运行，预期在未完成联调处失败。
+- [ ] 补齐 README 的 macOS arm64 安装、`uv`/Node 命令、数据库迁移、worker/API/Web 启动、模型训练和场景包复验步骤；写明版本锁定、第三方数据许可、DeepSeek API 密钥配置及实验适用范围。
+- [ ] 运行 `uv run pytest -q`、`npm --prefix web test`、`npm --prefix web run build`、`bash scripts/smoke.sh`，保留原始输出；切入、急刹、变道三类场景的网页实时画面须经真实浏览器验收，仅在所有必做验收通过后记录项目可交付。若完整 1400 次实验受机器性能限制，须保留预算变更记录与已完成的真实结果，不用模拟数字替代。
+- [ ] 核对 `docs/traceability.md` 无未映射需求、第一版验收记录仍可复验；完成 `docs/feature_feasibility.md` 全部未保证能力的评估状态和结论，明确哪些已实现、哪些仅完成评估以及后续条件；对感知模型、照片级仿真、安全认证、多仿真器/分布式和跨仿真器等价性至少记录依赖与粗略工作量。场景包能在干净目录独立解包运行，`Org_docs` 和既有设计/调研文档在项目实施阶段未改动；提交 `git commit -m "docs: verify and package complete platform"`。
+
+## 需求覆盖核对
+
+| 设计稿条目 | 实施任务 |
+|---|---|
+| R1 安全需求管理 | Task 5、6、7 |
+| R2 三类内置参数化模板 | Task 2、3、4、10 |
+| R3 自动生成原生场景与批量变体 | Task 2、3、6 |
+| R4 场景检索、版本、导入导出 | Task 5、6、7 |
+| R5 MetaDrive 运行与指标 | Task 1、4、6 |
+| R6 双向追溯、变更影响 | Task 5、6、7 |
+| R7 安全标记与组合检索 | Task 4、5、6、7 |
+| R8 可启动源码和设计/实验说明 | Task 10、12；论文重写需另行决定 |
+| 路线 A：风险模型与同预算实验 | Task 8、9 |
+| N1 自然语言配置现有模板 | Task 11 |
+| N2 单场景实时俯视画面 | Task 1、4、6、7、10、12 |
+| N3 场景类别扩展接口 | Task 2、3、4、6、7、10 |
+
+暂停恢复、未知外部 `.pkl` 导入、3D/视频、MLP、图神经网络、行人横穿、完整公开数据集导入和任意自然语言新行为均须按 `docs/feature_feasibility.md` 做最小验证和评估，但完整实现不是 Task 1–12 的完成门槛。感知模型训练、照片级仿真、正式安全认证、多仿真器/分布式运行和跨仿真器等价性不在当前交付范围；Task 12 对这些远期能力记录依赖和粗略工作量。评估结果不能替代第一版必须交付的类别扩展接口或三类内置场景。
+
+## 交付物与停止条件
+
+第一版交付（Task 10）：可启动源码及锁文件、三类可复现原生场景模板、经测试用第四类验证的扩展接口、带实时俯视画面的需求/场景/运行证据管理界面、风险模型及训练配置、同预算实验报告、需求追溯矩阵、部署文档、未保证能力的阶段性评估和独立验收记录。首个不可跳过的能力门槛是 Task 1 的原生场景重载；实时画面另以 Task 1 的连续俯视出帧为前置门槛。切入、急刹、变道的网页实时画面和新增类别通用链路必须通过真实运行验收，不能推迟到第二阶段。
+
+全项目交付（Task 12）：在第一版已通过验收的基础上，增加 DeepSeek 自然语言模板配置、预设复用、N1 的端到端验收和完整的功能可行性评估记录。任一必做能力失败时，应报告实际环境、MetaDrive SHA、最小复现、错误日志和可能的修正路径，不以网页演示、预生成结果或可行性评估代替。
