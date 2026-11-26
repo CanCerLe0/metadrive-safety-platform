@@ -49,7 +49,7 @@ def _metadrive_identity() -> tuple[str, str]:
     return dist.version, sha
 
 
-def _make_cut_in(scenario: dict) -> tuple[dict, str]:
+def _make_cut_in(scenario: dict, actor_initial_distance_m: float) -> tuple[dict, str]:
     """Add a deterministic traffic track to an officially exported road/ego."""
     scenario = copy.deepcopy(scenario)
     ego_id = str(scenario[SD.METADATA][SD.SDC_ID])
@@ -87,7 +87,11 @@ def _make_cut_in(scenario: dict) -> tuple[dict, str]:
     progress = np.clip((t - 2.0) / 3.0, 0.0, 1.0)
     smooth = progress * progress * (3.0 - 2.0 * progress)
     lateral_offset = side * 3.5 * (1.0 - smooth)
-    positions = start[:2] + (25.0 + 8.0 * t)[:, None] * forward + lateral_offset[:, None] * lateral
+    positions = (
+        start[:2]
+        + (actor_initial_distance_m + 8.0 * t)[:, None] * forward
+        + lateral_offset[:, None] * lateral
+    )
     actor["state"] = {
         "position": np.column_stack((positions, np.full(steps, start[2]))),
         "heading": np.full(steps, heading),
@@ -107,7 +111,7 @@ def _peak_memory_mb() -> float:
     return rss / (1024 * 1024 if sys.platform == "darwin" else 1024)
 
 
-def probe_native(out_dir: Path) -> ProbeResult:
+def probe_native(out_dir: Path, *, actor_initial_distance_m: float = 25.0) -> ProbeResult:
     """Export, save, reload, drive and render one native cut-in scenario."""
     version, sha = _metadrive_identity()
     dataset_dir = Path(out_dir) / "native_probe"
@@ -125,7 +129,7 @@ def probe_native(out_dir: Path) -> ProbeResult:
         exported, _ = source.export_scenarios(
             lambda _obs: [0.0, 0.25], scenario_index=0, max_episode_length=119
         )
-        scenario, actor_id = _make_cut_in(exported[0])
+        scenario, actor_id = _make_cut_in(exported[0], actor_initial_distance_m)
         save_dataset([scenario], "safety-probe", "1", dataset_dir)
     finally:
         source.close()
