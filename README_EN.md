@@ -8,9 +8,9 @@ The goal is to establish a reproducible workflow from **safety requirements → 
 
 ## Design and implementation order
 
-- [Requirements baseline and design draft](docs/design.md) (v0.13; Chinese)
-- [Implementation plan](docs/implementation-plan.md) (Tasks 1–12; Chinese)
-- [Related open-source projects research](docs/research.md) (Chinese)
+- [Requirements baseline and design draft](docs/需求基线与设计草案.md) (v0.13; Chinese)
+- [Implementation plan](docs/项目实施计划.md) (Tasks 1–12; Chinese)
+- [Related open-source projects research](docs/相似开源项目调研.md) (Chinese)
 
 Task 1 first verifies export of a native MetaDrive scenario, reloading it with `ScenarioEnv`, and continuous top-down frame rendering. Scenario templates, the runner, business API, web interface, and risk model follow. Natural-language template configuration begins only after independent acceptance of the first release.
 

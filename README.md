@@ -8,9 +8,9 @@
 
 ## 依据与实施顺序
 
-- [需求基线与设计草案](docs/design.md)（v0.13）
-- [实施计划](docs/implementation-plan.md)（Task 1–12）
-- [相似开源项目调研](docs/research.md)
+- [需求基线与设计草案](docs/需求基线与设计草案.md)（v0.13）
+- [实施计划](docs/项目实施计划.md)（Task 1–12）
+- [相似开源项目调研](docs/相似开源项目调研.md)
 
 先完成 Task 1 的 MetaDrive 原生场景导出、`ScenarioEnv` 重载和连续俯视出帧验证，再实现模板、运行器、业务 API、网页和风险模型。第一版通过独立验收后才接入自然语言配置。
 
