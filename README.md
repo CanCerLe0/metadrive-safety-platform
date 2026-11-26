@@ -2,50 +2,28 @@
 
 [中文](README.md) | [English](README_EN.md)
 
-本项目是在本人[原本科毕业设计项目](https://gitee.com/liu-shengdong-714/Intelligent-driving-scenario)基础上开展的改进型项目。它延续原项目对智能驾驶场景生成与安全管理的研究目标，并围绕 MetaDrive 原生场景、仿真证据追溯和风险模型训练重新设计与实现。
+本项目是在本人[原本科毕业设计项目](https://gitee.com/liu-shengdong-714/Intelligent-driving-scenario)基础上开展的改进型项目。它延续智能驾驶场景生成与安全管理的研究目标，以 MetaDrive 原生场景为基础，设计可复现的安全场景生成、仿真评测和证据管理平台。
 
-项目目标是建立“安全需求 → 参数化场景 → MetaDrive 仿真 → 安全判定 → 证据追溯”的可复现流程，并用实际仿真数据训练风险模型。Task 1 已验证原生数据集重载和连续真实俯视出帧；Task 2 已实现三类场景的参数校验、版本化注册与可复现采样。原生模板构建器、业务 API、网页及风险模型属于后续任务。
+## 项目目标
 
-## 依据与实施顺序
+平台围绕“安全需求 → 参数化场景 → MetaDrive 仿真 → 安全判定 → 证据追溯”建立完整流程。研究人员和测试人员可以将安全需求关联到场景版本与运行结果，查看碰撞、最小碰撞时间等指标，并追溯判定依据。风险模型使用平台产生的真实仿真数据训练，在有限运行预算内辅助选择值得测试的场景。
 
-- [需求基线与设计草案](docs/需求基线与设计草案.md)（v0.13）
-- [实施计划](docs/项目实施计划.md)（Task 1–12）
+## 设计范围
+
+- 使用 MetaDrive 作为唯一仿真执行器。每个场景版本同时保存可编辑的参数规格和可由 `ScenarioEnv` 重载的原生场景数据集。
+- 支持前车切入、前车紧急制动和变道三类参数化场景；通过版本化注册接口扩展其他场景类别。
+- 管理安全需求、场景、运行证据与安全标记，并提供双向追溯和变更后的复验提示。
+- 单场景运行展示 MetaDrive 的实时俯视画面；批量实验以无画面方式运行。
+- 基于真实仿真结果训练风险模型，比较模型引导选择与同预算随机选择。自然语言入口仅将描述映射为已支持模板的参数配置。
+
+## 技术架构
+
+后端采用 Python 3.11、FastAPI 和 SQLite，独立 worker 运行 MetaDrive 仿真任务；前端采用 Vue 3 和 TypeScript。场景规格、原生数据集、运行轨迹、指标及模型版本共同构成可复验的证据链。目标运行环境为 macOS arm64。
+
+## 设计文档
+
+- [需求基线与设计草案](docs/需求基线与设计草案.md)
+- [项目实施计划](docs/项目实施计划.md)
+- [仿真器兼容性验证](docs/仿真器兼容性验证.md)
+- [功能可行性评估](docs/功能可行性评估.md)
 - [相似开源项目调研](docs/相似开源项目调研.md)
-
-Task 1 已完成 MetaDrive 原生场景导出、`ScenarioEnv` 重载和连续俯视出帧验证；Task 2 已完成场景规格与模板注册。下一步按计划实现原生模板构建器、运行器、业务 API、网页和风险模型。第一版通过独立验收后才接入自然语言配置。
-
-## 本地准备
-
-目标环境为 macOS arm64 和 Python 3.11。所有 uv 命令使用项目内缓存：
-
-```sh
-export UV_CACHE_DIR="$PWD/.cache/uv"
-export UV_PYTHON_INSTALL_DIR="$PWD/.cache/uv/python"
-export MPLCONFIGDIR="$PWD/.cache/matplotlib"
-uv python install 3.11
-uv venv --python 3.11
-uv sync --dev
-```
-
-`pyproject.toml` 与 `uv.lock` 锁定官方 `MetaDrive-0.4.3` 对应源码 SHA `5bf8ea8909c4643a4099a250e6f5fb89c695d8b4`。首次运行还需下载官方 MetaDrive 资源包。运行 Task 1 集成探针：
-
-```sh
-uv run --locked pytest tests/integration/test_native_probe.py -q
-```
-
-结果与环境限制见[兼容性验证](docs/仿真器兼容性验证.md)。当前尚无可启动服务。
-
-## 目录
-
-| 路径 | 计划职责 |
-| --- | --- |
-| `src/safety_platform/domain/` | 场景规格、模板与类型注册 |
-| `src/safety_platform/sim/` | 原生场景、运行、指标与画面 |
-| `src/safety_platform/storage/` | SQLite 持久化与版本 |
-| `src/safety_platform/api/`、`jobs/` | HTTP 接口与独立 worker |
-| `src/safety_platform/ml/`、`nl/` | 风险模型与第二阶段语言解析 |
-| `web/` | Vue 3 前端（后续任务实现） |
-| `tests/` | 单元与真实 MetaDrive 集成测试 |
-| `docs/` | 设计、计划、兼容性与可行性记录 |
-
-运行数据、虚拟环境、缓存、数据库、原生 `.pkl` 和模型二进制不进入 Git。
