@@ -190,10 +190,24 @@ class BuiltinScenarioType:
         return samples
 
     def build_native(self, spec: ScenarioSpec, out_dir: Path) -> Any:
-        raise NotImplementedError("native builder is implemented in Task 3")
+        from safety_platform.sim.base_map import create_base_scene
+        from safety_platform.sim.trajectories import add_vehicle_track, set_ego_lane_change
+
+        scene = create_base_scene(spec)
+        if self.template_id == "lane_change":
+            set_ego_lane_change(scene, spec)
+        mode = self.template_id if self.template_id in {"cut_in", "front_brake"} else "steady"
+        add_vehicle_track(scene, spec.actor_specs[0], spec, mode=mode)
+        return scene
 
     def check_event(self, trajectory: Any) -> bool:
-        raise NotImplementedError("event checking is implemented in Task 3")
+        import numpy as np
+
+        positions = np.asarray(trajectory["position"])
+        if self.template_id == "front_brake":
+            speed = np.linalg.norm(np.asarray(trajectory["velocity"]), axis=1)
+            return bool(speed[0] - speed[-1] > 1.0)
+        return bool(abs(positions[-1, 1] - positions[0, 1]) > 2.5)
 
 
 BUILTIN_TYPES = (
