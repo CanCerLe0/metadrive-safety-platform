@@ -70,6 +70,42 @@ def test_unknown_type_and_version_are_explicit():
         registry.register(FourthType("1.0"))
 
 
+def test_release_version_supersedes_prerelease():
+    registry = ScenarioRegistry()
+    prerelease = FourthType("1.0-rc1")
+    release = FourthType("1.0")
+    registry.register(prerelease)
+    registry.register(release)
+    assert registry.get("test_fourth") is release
+    assert registry.list(include_history=True) == [prerelease, release]
+
+
+def test_numeric_version_order_and_unsupported_format():
+    registry = ScenarioRegistry()
+    registry.register(FourthType("1.9"))
+    registry.register(FourthType("1.10"))
+    assert registry.get("test_fourth").template_version == "1.10"
+    with pytest.raises(ValueError, match="version"):
+        registry.register(FourthType("next"))
+
+
+def test_dotted_prerelease_sorts_before_release():
+    registry = ScenarioRegistry()
+    prerelease = FourthType("1.0-rc.1")
+    release = FourthType("1.0")
+    registry.register(prerelease)
+    registry.register(release)
+    assert registry.list(include_history=True) == [prerelease, release]
+    assert registry.get("test_fourth") is release
+
+
+def test_equivalent_release_aliases_cannot_make_latest_order_dependent():
+    registry = ScenarioRegistry()
+    registry.register(FourthType("1.0"))
+    with pytest.raises(ValueError, match="equivalent version"):
+        registry.register(FourthType("1.0.0"))
+
+
 def test_builtin_catalog_exposes_unit_defaults_and_json_bounds():
     assert {item.template_id for item in DEFAULT_REGISTRY.list()} == {"cut_in", "front_brake", "lane_change"}
     for item in DEFAULT_REGISTRY.list():
@@ -112,3 +148,23 @@ def test_catalog_metadata_is_independent_between_calls():
     schema["x-form-fields"][0]["default"] = 999
     assert scene_type.json_schema["x-form-fields"][0]["default"] != 999
     assert DEFAULT_REGISTRY.get("front_brake").json_schema["x-form-fields"][0]["default"] != 999
+
+
+def test_catalog_cross_field_rules_reference_real_field_paths():
+    schema = DEFAULT_REGISTRY.get("cut_in").json_schema
+    rule = schema["x-cross-field-rules"][0]
+    for field_path in ("event_spec.start_s", "event_spec.duration_s", "map_spec.duration_s"):
+        assert field_path in rule
+    lane_rule = schema["x-cross-field-rules"][2]
+    for field_path in ("ego_spec.lane_index", "actor_specs.0.lane_index", "event_spec.target_lane_index"):
+        assert field_path in lane_rule
+
+
+def test_front_actor_catalog_reports_headway_constraint():
+    for template_id in ("cut_in", "front_brake"):
+        rules = " ".join(DEFAULT_REGISTRY.get(template_id).json_schema["x-cross-field-rules"])
+        assert "actor_specs.0.longitudinal_gap_m" in rules
+        assert "ego_spec.speed_mps" in rules
+        assert "4.5" in rules
+    lane_change_rules = " ".join(DEFAULT_REGISTRY.get("lane_change").json_schema["x-cross-field-rules"])
+    assert "4.5" not in lane_change_rules

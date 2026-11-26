@@ -36,6 +36,14 @@ _COMMON_FIELDS = (
     FormField("seed", "随机种子", None, 42, 0, 2**32 - 1),
 )
 
+_MIN_EVENT_START_CENTER_GAP_M = 4.5
+
+
+def _nominal_event_start_gap_m(
+    ego_speed_mps: float, actor_speed_mps: float, initial_gap_m: float, start_s: float
+) -> float:
+    return initial_gap_m + (actor_speed_mps - ego_speed_mps) * start_s
+
 
 @dataclass(frozen=True)
 class BuiltinScenarioType:
@@ -89,11 +97,18 @@ class BuiltinScenarioType:
             definitions["EventSpec"]["required"].append("target_lane_index")
         schema["properties"]["seed"] = {"type": "integer", "minimum": 0, "maximum": 2**32 - 1}
         schema["x-form-fields"] = self.form_fields
-        schema["x-cross-field-rules"] = [
-            "event.start_s + event.duration_s <= map.duration_s",
-            "actor starts 15–80 m ahead without overlap",
-            "lane and event target must match template semantics",
+        rules = [
+            "event_spec.start_s + event_spec.duration_s <= map_spec.duration_s",
+            "actor_specs.0.longitudinal_gap_m is 15–80 m at the start",
+            "ego_spec.lane_index, actor_specs.0.lane_index and "
+            "event_spec.target_lane_index match template semantics",
         ]
+        if self.template_id in {"cut_in", "front_brake"}:
+            rules.append(
+                "actor_specs.0.longitudinal_gap_m + "
+                "(actor_specs.0.speed_mps - ego_spec.speed_mps) * event_spec.start_s > 4.5 m"
+            )
+        schema["x-cross-field-rules"] = rules
         return schema
 
     def _validate_semantics(self, spec: ScenarioSpec) -> None:
@@ -115,6 +130,12 @@ class BuiltinScenarioType:
             raise ValueError("event time or duration is outside template range")
         if not 0 <= spec.seed < 2**32:
             raise ValueError("seed must be a uint32")
+        if self.template_id in {"cut_in", "front_brake"}:
+            nominal_gap = _nominal_event_start_gap_m(
+                ego.speed_mps, actor.speed_mps, actor.longitudinal_gap_m, event.start_s
+            )
+            if nominal_gap <= _MIN_EVENT_START_CENTER_GAP_M:
+                raise ValueError("event-start headway must exceed 4.5 m under nominal speeds")
         if self.template_id == "cut_in":
             if actor.lane_index != 1 or event.target_lane_index != 0 or event.deceleration_mps2 is not None:
                 raise ValueError("cut-in actor must move from neighboring lane 1 to ego lane 0")
@@ -135,7 +156,7 @@ class BuiltinScenarioType:
     def sample(self, count: int, seed: int) -> list[ScenarioSpec]:
         rng = Random(seed)
         samples = []
-        for _ in range(count):
+        while len(samples) < count:
             event: dict[str, Any] = {
                 "start_s": round(rng.uniform(1, 5), 3),
                 "duration_s": round(rng.uniform(2, 4), 3),
@@ -157,6 +178,14 @@ class BuiltinScenarioType:
                 "event_spec": event,
                 "seed": rng.randrange(0, 2**32),
             }
+            if self.template_id in {"cut_in", "front_brake"}:
+                actor = raw["actor_specs"][0]
+                nominal_gap = _nominal_event_start_gap_m(
+                    raw["ego_spec"]["speed_mps"], actor["speed_mps"],
+                    actor["longitudinal_gap_m"], event["start_s"]
+                )
+                if nominal_gap <= _MIN_EVENT_START_CENTER_GAP_M:
+                    continue
             samples.append(self.validate(raw))
         return samples
 

@@ -55,3 +55,16 @@ def test_boolean_is_not_accepted_as_numeric_parameter():
         validate_spec(spec_data(seed=True))
     with pytest.raises(ValidationError):
         validate_spec(spec_data(event_spec__target_lane_index=False))
+
+
+@pytest.mark.parametrize("template_id", ["cut_in", "front_brake"])
+def test_front_actor_has_nonoverlapping_nominal_headway_at_event_start(template_id):
+    raw = spec_data(
+        template_id,
+        ego_spec__speed_mps=22.0,
+        actor_specs__0__speed_mps=6.0,
+        actor_specs__0__longitudinal_gap_m=15.0,
+        event_spec__start_s=5.0,
+    )
+    with pytest.raises(ValidationError, match="event-start headway"):
+        validate_spec(raw)

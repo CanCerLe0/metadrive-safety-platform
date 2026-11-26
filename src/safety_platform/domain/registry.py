@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Mapping, Protocol, runtime_checkable
 
@@ -43,8 +44,14 @@ class ScenarioRegistry:
         key = (scenario_type.template_id, scenario_type.template_version)
         if not key[0] or not key[1]:
             raise ValueError("template ID and version must be nonempty")
+        version_key = _version_key(key[1])
         if key in self._types:
             raise ValueError(f"scenario type {key} already registered")
+        if any(
+            registered_id == key[0] and _version_key(registered_version) == version_key
+            for registered_id, registered_version in self._types
+        ):
+            raise ValueError(f"equivalent version already registered for {key[0]}: {key[1]}")
         self._types[key] = scenario_type
 
     def get(self, template_id: str, version: str | None = None) -> ScenarioType:
@@ -64,8 +71,19 @@ class ScenarioRegistry:
         return [self.get(template_id) for template_id in sorted({key[0] for key in self._types})]
 
 
-def _version_key(version: str) -> tuple[tuple[int, int | str], ...]:
-    return tuple((0, int(part)) if part.isdigit() else (1, part) for part in version.split("."))
+_VERSION_PATTERN = re.compile(r"(?P<release>\d+(?:\.\d+)*)(?:-(?P<stage>alpha|beta|rc)\.?(?P<number>\d+))?")
+_STAGE_ORDER = {"alpha": 0, "beta": 1, "rc": 2}
+
+
+def _version_key(version: str) -> tuple[tuple[int, ...], int, int]:
+    match = _VERSION_PATTERN.fullmatch(version) if isinstance(version, str) else None
+    if match is None:
+        raise ValueError(f"unsupported template version: {version!r}")
+    release = tuple(int(part) for part in match.group("release").split("."))
+    while len(release) > 1 and release[-1] == 0:
+        release = release[:-1]
+    stage = match.group("stage")
+    return release, 3 if stage is None else _STAGE_ORDER[stage], int(match.group("number") or 0)
 
 
 DEFAULT_REGISTRY = ScenarioRegistry()

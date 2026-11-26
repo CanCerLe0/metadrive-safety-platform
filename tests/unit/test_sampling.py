@@ -18,3 +18,13 @@ def test_invalid_sampling_count():
         assert "count" in str(exc)
     else:
         raise AssertionError("negative count was accepted")
+
+
+def test_front_actor_samples_keep_nominal_headway_at_event_start():
+    for template_id in ("cut_in", "front_brake"):
+        for spec in sample_specs(template_id, 1000, 42):
+            actor = spec.actor_specs[0]
+            headway = actor.longitudinal_gap_m + (
+                actor.speed_mps - spec.ego_spec.speed_mps
+            ) * spec.event_spec.start_s
+            assert headway > 4.5
