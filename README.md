@@ -4,7 +4,7 @@
 
 本项目是在本人[原本科毕业设计项目](https://gitee.com/liu-shengdong-714/Intelligent-driving-scenario)基础上开展的改进型项目。它延续原项目对智能驾驶场景生成与安全管理的研究目标，并围绕 MetaDrive 原生场景、仿真证据追溯和风险模型训练重新设计与实现。
 
-项目目标是建立“安全需求 → 参数化场景 → MetaDrive 仿真 → 安全判定 → 证据追溯”的可复现流程，并用实际仿真数据训练风险模型。当前仓库处于**项目结构初始化**阶段，尚未完成原生场景重载、实时俯视画面或业务功能验证。
+项目目标是建立“安全需求 → 参数化场景 → MetaDrive 仿真 → 安全判定 → 证据追溯”的可复现流程，并用实际仿真数据训练风险模型。Task 1 已验证原生数据集重载和连续真实俯视出帧；模板、业务 API、网页及风险模型仍待后续任务。
 
 ## 依据与实施顺序
 
@@ -27,7 +27,13 @@ uv venv --python 3.11
 uv sync --dev
 ```
 
-`pyproject.toml` 暂以官方 `MetaDrive-0.4.3` tag 为能力验证候选。锁文件已记录该 tag 对应的源码 SHA，但只有通过原生重载和出帧验证后，才能将其作为兼容性基线。当前尚无可启动服务。
+`pyproject.toml` 与 `uv.lock` 锁定官方 `MetaDrive-0.4.3` 对应源码 SHA `5bf8ea8909c4643a4099a250e6f5fb89c695d8b4`。首次运行还需下载官方 MetaDrive 资源包。运行 Task 1 集成探针：
+
+```sh
+uv run --locked pytest tests/integration/test_native_probe.py -q
+```
+
+结果与环境限制见[兼容性验证](docs/仿真器兼容性验证.md)。当前尚无可启动服务。
 
 ## 目录
 

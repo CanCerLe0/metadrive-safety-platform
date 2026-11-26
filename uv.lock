@@ -535,7 +535,7 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.13,<2" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "httpx", marker = "extra == 'nl'", specifier = ">=0.27,<1" },
-    { name = "metadrive-simulator", git = "https://github.com/metadriverse/metadrive.git?tag=MetaDrive-0.4.3" },
+    { name = "metadrive-simulator", git = "https://github.com/metadriverse/metadrive.git?rev=5bf8ea8909c4643a4099a250e6f5fb89c695d8b4" },
     { name = "numpy", specifier = ">=1.26,<3" },
     { name = "pydantic", specifier = ">=2,<3" },
     { name = "scikit-learn", specifier = ">=1.5,<2" },
@@ -552,7 +552,7 @@ dev = [
 [[package]]
 name = "metadrive-simulator"
 version = "0.4.2.3"
-source = { git = "https://github.com/metadriverse/metadrive.git?tag=MetaDrive-0.4.3#5bf8ea8909c4643a4099a250e6f5fb89c695d8b4" }
+source = { git = "https://github.com/metadriverse/metadrive.git?rev=5bf8ea8909c4643a4099a250e6f5fb89c695d8b4#5bf8ea8909c4643a4099a250e6f5fb89c695d8b4" }
 dependencies = [
     { name = "filelock" },
     { name = "gymnasium" },

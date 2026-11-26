@@ -4,7 +4,7 @@
 
 This project is an improved follow-up to my [original graduation project](https://gitee.com/liu-shengdong-714/Intelligent-driving-scenario). It carries forward that project's research goals in driving scenario generation and safety management, while redesigning and implementing native MetaDrive scenarios, simulation evidence traceability, and risk model training.
 
-The goal is to establish a reproducible workflow from **safety requirements → parameterized scenarios → MetaDrive simulation → safety assessment → evidence traceability**, and to train a risk model on actual simulation data. This repository is currently at the **project structure initialization** stage. Native scenario reloading, live top-down rendering, and the application features have not yet been validated or implemented.
+The goal is to establish a reproducible workflow from **safety requirements → parameterized scenarios → MetaDrive simulation → safety assessment → evidence traceability**, and to train a risk model on actual simulation data. Task 1 has validated native scenario reloading and continuous real top-down frames. Templates, the application features, and the risk model remain for later tasks.
 
 ## Design and implementation order
 
@@ -24,10 +24,10 @@ export UV_PYTHON_INSTALL_DIR="$PWD/.cache/uv/python"
 export MPLCONFIGDIR="$PWD/.cache/matplotlib"
 uv python install 3.11
 uv venv --python 3.11
-uv sync --dev
+uv sync --dev --locked
 ```
 
-`pyproject.toml` currently uses the official `MetaDrive-0.4.3` tag as a compatibility candidate. The lockfile records the tag's source SHA, but it becomes a compatibility baseline only after native scenario reloading and frame rendering pass validation. There is no runnable service yet.
+`pyproject.toml` and `uv.lock` pin the official `MetaDrive-0.4.3` source commit `5bf8ea8909c4643a4099a250e6f5fb89c695d8b4`. The first simulation run also downloads MetaDrive's official assets. Run the Task 1 integration probe with `uv run --locked pytest tests/integration/test_native_probe.py -q`. See the [compatibility record](docs/仿真器兼容性验证.md) for results and limits. There is no runnable service yet.
 
 ## Directory layout
 
