@@ -28,6 +28,7 @@ def build_native(
     scene = scenario_type.build_native(spec, directory)
     scene.pop("safety_geometry", None)
     event_track_id = scene.pop("safety_event_track_id", spec.actor_specs[0].actor_id)
+    scene[SD.METADATA]["safety_event_track_id"] = str(event_track_id)
     if not scenario_type.check_event(scene[SD.TRACKS][event_track_id]["state"]):
         raise ValueError(f"registered event check failed: {spec.template_id}")
     SD.sanity_check(scene, check_self_type=True)
