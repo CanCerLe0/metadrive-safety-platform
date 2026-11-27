@@ -18,6 +18,7 @@ class VehicleState:
     heading_rad: float
     length_m: float
     width_m: float
+    height_m: float = 1.5
 
 
 def compute_ttc(ego_state: VehicleState, other_state: VehicleState, horizon_s: float = TTC_HORIZON_S) -> float:
@@ -61,4 +62,5 @@ class SafetyMetrics:
         if collision:
             self.min_ttc = 0.0
         elif not self.collision:
-            self.min_ttc = min(self.min_ttc, *(compute_ttc(ego, other) for other in others))
+            for other in others:
+                self.min_ttc = min(self.min_ttc, compute_ttc(ego, other))

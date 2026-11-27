@@ -23,3 +23,13 @@ def test_ttc_rotated_boxes_and_actual_collision():
     metrics.observe(ego, [state(30, 0, 0, 0)], collision=False)
     metrics.observe(ego, [state(0, 0, 0, 0)], collision=True)
     assert metrics.min_ttc == 0
+
+
+def test_empty_traffic_preserves_running_ttc():
+    ego = state(0, 0, 12, 0)
+    metrics = SafetyMetrics()
+    metrics.observe(ego, [], collision=False)
+    assert metrics.min_ttc == 10
+    metrics.observe(ego, [state(25, 0, 8, 0)], collision=False)
+    metrics.observe(ego, [], collision=False)
+    assert metrics.min_ttc == pytest.approx(5.125)

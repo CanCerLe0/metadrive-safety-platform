@@ -28,3 +28,12 @@ def test_visual_run_matches_headless_metrics(tmp_path, template_id):
     assert sink.path.read_bytes().startswith(b"\xff\xd8")
     assert sink.last_sim_time_s > 0
     assert visual.render_mean_ms > 0
+
+
+def test_pacing_handles_deadline_crossing_without_negative_sleep():
+    from safety_platform.sim.frames import pace_to_deadline
+
+    sleeps = []
+    ticks = iter((9.99, 10.01))
+    pace_to_deadline(10.0, clock=lambda: next(ticks), sleeper=sleeps.append)
+    assert sleeps == [pytest.approx(0.01)]

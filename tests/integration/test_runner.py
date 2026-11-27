@@ -1,4 +1,6 @@
 import json
+import pickle
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,8 @@ from safety_platform.sim.builder import build_native
 from safety_platform.sim.bundle import BundleIntegrityError
 from safety_platform.sim.policy import PolicyConfig
 from safety_platform.sim.runner import run_bundle
+from metadrive.scenario.utils import read_scenario_data
+from metadrive.scenario.scenario_description import ScenarioDescription as SD
 from tests.factories import spec_data
 
 
@@ -75,3 +79,51 @@ def test_event_check_uses_recorded_event_actor(runner_bundle):
 def test_policy_params_cannot_change_without_new_version():
     with pytest.raises(ValueError, match="new policy version"):
         PolicyConfig(lookahead_m=10.0)
+
+
+def test_registered_checker_receives_native_track_fields(tmp_path):
+    class HeadingEvent(BuiltinScenarioType):
+        def check_event(self, trajectory):
+            assert len(trajectory["heading"]) == len(trajectory["valid"])
+            assert trajectory["length"].shape[1] == 1
+            return bool(trajectory["valid"].sum() > 50 and
+                        abs(float(trajectory["heading"][0])) < 1)
+
+    registry = ScenarioRegistry()
+    registry.register(HeadingEvent("front_brake"))
+    bundle = build_native(validate_spec(spec_data("front_brake"), registry=registry),
+                          tmp_path / "heading", registry=registry)
+    result = run_bundle(bundle.directory, PolicyConfig(), seed=42, registry=registry)
+    assert result.event_occurred and result.valid
+
+
+@pytest.mark.parametrize("template_id", ["cut_in", "front_brake", "lane_change"])
+def test_legacy_builtin_bundle_retains_event_qualification(tmp_path, template_id):
+    bundle = build_native(validate_spec(spec_data(template_id)), tmp_path / "legacy")
+    scene = read_scenario_data(bundle.scene_path)
+    del scene[SD.METADATA]["safety_event_track_id"]
+    with bundle.scene_path.open("wb") as handle:
+        pickle.dump(scene, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    manifest = json.loads(bundle.manifest_path.read_text())
+    manifest["files"][bundle.scene_path.name] = hashlib.sha256(bundle.scene_path.read_bytes()).hexdigest()
+    bundle.manifest_path.write_text(json.dumps(manifest))
+    result = run_bundle(bundle.directory, PolicyConfig(), seed=42)
+    assert result.event_occurred and result.valid
+
+
+def test_nonvehicle_collision_and_actor_flags_are_recorded(runner_bundle):
+    from types import SimpleNamespace
+    from safety_platform.sim.metrics import SafetyMetrics, VehicleState
+    from safety_platform.sim.runner import _vehicle_collision
+
+    contact = SimpleNamespace(crash_vehicle=False, crash_object=True, crash_building=False,
+                              crash_human=False, crash_sidewalk=False)
+    assert _vehicle_collision(contact)
+    metrics = SafetyMetrics()
+    ego = VehicleState((0, 0), (0, 0), 0, 4.5, 1.8)
+    metrics.observe(ego, [], collision=_vehicle_collision(contact))
+    assert metrics.min_ttc == 0
+    result = run_bundle(runner_bundle.directory, PolicyConfig(), seed=42)
+    steps = json.loads(result.trajectory_path.read_text())["steps"]
+    assert all(isinstance(actor["collision"], bool)
+               for step in steps for actor in step["actors"].values())

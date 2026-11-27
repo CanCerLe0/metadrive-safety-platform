@@ -209,6 +209,14 @@ class BuiltinScenarioType:
             return bool(speed[0] - speed[-1] > 1.0)
         return bool(abs(positions[-1, 1] - positions[0, 1]) > 2.5)
 
+    def event_track_id(self, spec: ScenarioSpec, scenario: dict) -> str:
+        """Recover event subject in bundles predating explicit event metadata."""
+        if self.template_id == "lane_change":
+            from metadrive.scenario.scenario_description import ScenarioDescription as SD
+
+            return str(scenario[SD.METADATA][SD.SDC_ID])
+        return spec.actor_specs[0].actor_id
+
 
 BUILTIN_TYPES = (
     BuiltinScenarioType("cut_in"),

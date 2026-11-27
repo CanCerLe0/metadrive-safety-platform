@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from time import perf_counter, sleep
 from typing import Protocol
 from uuid import uuid4
 
 
 class FrameSink(Protocol):
     def publish(self, jpeg: bytes, sim_time_s: float) -> None: ...
+
+
+def pace_to_deadline(deadline_s: float, *, clock=perf_counter, sleeper=sleep) -> None:
+    remaining_s = deadline_s - clock()
+    if remaining_s > 0:
+        sleeper(remaining_s)
 
 
 class LatestFrameSink:
