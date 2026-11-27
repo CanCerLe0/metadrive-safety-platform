@@ -31,11 +31,18 @@ def test_runner_replay_same_seed(runner_bundle):
     assert a.trajectory_path.is_file() and b.trajectory_path.is_file()
     one = json.loads(a.trajectory_path.read_text())
     two = json.loads(b.trajectory_path.read_text())
+    assert one["status"] == a.status
+    assert one["termination_reason"] == a.termination_reason
     assert one == two
     assert one["steps"] and one["steps"][0]["actors"]
     assert all("position" in step["ego"] and "velocity" in step["ego"] for step in one["steps"])
     assert a.event_occurred and a.valid
     assert a.policy_version and a.metadrive_sha
+
+
+def test_runner_rejects_seed_that_disagrees_with_bundle(runner_bundle):
+    with pytest.raises(ValueError, match="bundle seed"):
+        run_bundle(runner_bundle.directory, PolicyConfig(), seed=999)
 
 
 def test_stop_requested_returns_terminal_outcome(runner_bundle):
@@ -51,6 +58,9 @@ def test_stop_requested_returns_terminal_outcome(runner_bundle):
     assert result.steps == 5
     assert not result.valid
     assert result.trajectory_path.is_file()
+    evidence = json.loads(result.trajectory_path.read_text())
+    assert evidence["status"] == "stopped"
+    assert evidence["termination_reason"] == "stop_requested"
 
 
 def test_bundle_is_verified_before_scenario_load(tmp_path: Path, runner_bundle):

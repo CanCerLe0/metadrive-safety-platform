@@ -119,8 +119,10 @@ def run_bundle(
     *,
     registry: ScenarioRegistry = DEFAULT_REGISTRY,
 ) -> RunOutcome:
-    """Replay one checked bundle; `seed` is audit metadata for this deterministic scene."""
+    """Replay one checked bundle using its scene-generation seed."""
     manifest = verify_bundle(bundle_dir)
+    if type(seed) is not int or seed != manifest.seed:
+        raise ValueError(f"run seed must match bundle seed {manifest.seed}")
     scenario_type = registry.get(manifest.template_id, manifest.template_version)
     if playback_rate is not None and playback_rate <= 0:
         raise ValueError("playback_rate must be positive")
@@ -176,7 +178,7 @@ def run_bundle(
             _, _, terminated, truncated, info = env.step(action)
             steps += 1
             capture(steps * 0.1, info)
-            if frame_sink is not None and steps % 2 == 0:
+            if frame_sink is not None:
                 render_start = perf_counter()
                 pixels = np.asarray(env.render(mode="topdown", window=False, screen_size=(640, 360)))
                 if pixels.shape != (360, 640, 3) or pixels.dtype != np.uint8 or not pixels.any():
@@ -201,6 +203,7 @@ def run_bundle(
     trajectory_path.write_text(json.dumps({
         "scene_id": manifest.scene_id, "seed": seed, "policy_version": policy.version,
         "metrics_version": METRICS_VERSION, "reactive_traffic": manifest.reactive_traffic,
+        "status": status, "termination_reason": reason,
         "steps": records,
     }, sort_keys=True, separators=(",", ":")), encoding="utf-8")
     return RunOutcome(

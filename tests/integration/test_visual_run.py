@@ -24,7 +24,7 @@ def test_visual_run_matches_headless_metrics(tmp_path, template_id):
         plain.collision, plain.out_of_road, plain.completed
     )
     assert json.loads(visual.trajectory_path.read_text()) == json.loads(plain.trajectory_path.read_text())
-    assert 30 <= visual.frame_count <= 100
+    assert 0.7 * visual.steps <= visual.frame_count <= visual.steps
     assert sink.path.read_bytes().startswith(b"\xff\xd8")
     assert sink.last_sim_time_s > 0
     assert visual.render_mean_ms > 0
