@@ -1,5 +1,6 @@
 .DS_Store
 .cache/
+.worktrees/
 .venv/
 var/
 __pycache__/
